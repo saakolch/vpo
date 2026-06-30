@@ -1,0 +1,34 @@
+site:
+  name: hpc2_2gpu
+  repo_root: /hpc2hdd/home/skolchin784/projects/vpo
+  python: .venv/bin/python
+  train_shell: /bin/bash
+  train_script: train.sh
+  slurm_log_root: pre_experiments/first_experiment/slurm
+
+environment:
+  hf_home: /hpc2hdd/home/skolchin784/tools/hf_cache
+  transformers_cache: /hpc2hdd/home/skolchin784/tools/hf_cache/transformers
+  hf_hub_cache: /hpc2hdd/home/skolchin784/tools/hf_cache/hub
+  hf_hub_offline: "1"
+  transformers_offline: "1"
+  wandb_mode: disabled
+  tokenizers_parallelism: "false"
+
+model_snapshots:
+  Qwen/Qwen3-4B: /hpc2hdd/home/skolchin784/tools/hf_cache/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
+
+slurm:
+  account: null
+  smoke:
+    partition: i64m1tga800ue
+    gres: gpu:a800:1
+    cpus_per_task: 8
+    mem: 64G
+    time: "00:30:00"
+  official:
+    partition: i64m1tga800ue
+    gres: gpu:a800:2
+    cpus_per_task: 12
+    mem: 192G
+    time: "2-00:00:00"

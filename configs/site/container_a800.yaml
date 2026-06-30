@@ -1,0 +1,23 @@
+site:
+  name: container_a800
+  repo_root: /hpc2hdd/home/skolchin784/projects/vpo
+  python: /hpc2hdd/home/skolchin784/.local/share/uv/python/cpython-3.11-linux-x86_64-gnu/bin/python3.11
+  train_shell: /bin/bash
+  train_script: train.sh
+  local_log_root: pre_experiments/1_frozen_diagnostic/local_runs
+
+environment:
+  hf_home: /hpc2hdd/home/skolchin784/tools/hf_cache
+  transformers_cache: /hpc2hdd/home/skolchin784/tools/hf_cache/transformers
+  hf_hub_cache: /hpc2hdd/home/skolchin784/tools/hf_cache/hub
+  hf_hub_offline: "1"
+  transformers_offline: "1"
+  allow_dataset_downloads: "1"
+  wandb_mode: disabled
+  tokenizers_parallelism: "false"
+  pythonpath: /hpc2hdd/home/skolchin784/projects/vpo:/hpc2hdd/home/skolchin784/projects/vpo/.venv/lib/python3.11/site-packages
+
+model_snapshots:
+  Qwen/Qwen3-0.6B: /hpc2hdd/home/skolchin784/tools/hf_cache/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
+  Qwen/Qwen3-4B: /hpc2hdd/home/skolchin784/tools/hf_cache/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
+  Qwen/Qwen3-1.7B: /hpc2hdd/home/skolchin784/tools/hf_cache/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e

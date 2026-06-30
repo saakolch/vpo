@@ -1,0 +1,175 @@
+experiment:
+  name: short_training_dynamics
+  output_root: pre_experiments/2_short_training
+  status_file: pre_experiments/2_short_training/STATUS.md
+  source_ledger: pre_experiments/2_short_training/SOURCE_LEDGER.md
+  command_log: pre_experiments/2_short_training/LOCAL_COMMAND_LOG.md
+  next_action: pre_experiments/2_short_training/NEXT_ACTION.md
+
+safety:
+  allow_main_experiments: false
+  wandb_mode: disabled
+  max_gpu_hours_without_override: 4
+  submit_full_grid: false
+  ultra_feedback_enabled: false
+  qwen3_8b_enabled: false
+
+methods:
+  active:
+    - grpo
+    - maxrl
+    - max_at_k
+    - multi_rlvr
+    - vpo
+  eval_aliases:
+    maze:
+      max_at_k: maxrl
+    musique:
+      max_at_k: maxrl
+
+defaults:
+  seeds: [0]
+  dataset_split: test
+  candidate_budgets: [1, 3, 10, 30]
+  train_overrides:
+    - trainer.test_freq=-1
+    - trainer.logger=["console"]
+
+smoke:
+  name: smoke
+  benchmark: maze
+  model: Qwen/Qwen3-0.6B
+  methods: [grpo, maxrl, max_at_k, multi_rlvr, vpo]
+  seeds: [0]
+  updates: [0, 1]
+  estimated_gpu_hours: 1
+  partition_class: smoke
+  data:
+    train_size: 4
+    test_size: 4
+    train_seed: 42
+    test_seed: 4242
+  training:
+    epochs: 1
+    n_gpus: 1
+    overrides:
+      - ++data.train_batch_size=4
+      - ++actor_rollout_ref.rollout.n=2
+      - ++actor_rollout_ref.actor.ppo_mini_batch_size=4
+      - ++actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1
+      - ++actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+      - ++actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
+      - ++actor_rollout_ref.rollout.val_kwargs.n=2
+      - ++actor_rollout_ref.rollout.gpu_memory_utilization=0.35
+      - ++actor_rollout_ref.rollout.max_model_len=2048
+      - ++actor_rollout_ref.rollout.max_num_seqs=8
+    method_overrides:
+      max_at_k:
+        - actor_rollout_ref.rollout.n=3
+        - actor_rollout_ref.rollout.agent.num_workers=4
+  eval:
+    n_chains: 2
+    max_tokens: 128
+    temperature: 0.7
+    num_solutions:
+      grpo: 1
+      maxrl: 1
+      max_at_k: 1
+      multi_rlvr: 3
+      vpo: 3
+
+benchmarks:
+  maze:
+    name: maze
+    model: Qwen/Qwen3-4B
+    methods: [grpo, maxrl, max_at_k, multi_rlvr, vpo]
+    seeds: [0]
+    updates: [0, 1, 2, 4, 8, 16]
+    estimated_gpu_hours: 4
+    partition_class: official
+    data:
+      train_size: 1000
+      test_size: 100
+      train_seed: 42
+      test_seed: 4242
+    training:
+      epochs: 50
+      n_gpus: 4
+    eval:
+      n_chains: 10
+      max_tokens: 1024
+      temperature: 0.7
+      num_solutions:
+        grpo: 1
+        maxrl: 1
+        max_at_k: 1
+        multi_rlvr: 3
+        vpo: 3
+
+  musique:
+    name: musique
+    model: Qwen/Qwen3-1.7B
+    methods: [grpo, maxrl, max_at_k, multi_rlvr, vpo]
+    seeds: [0]
+    updates: [0, 1, 5, 10, 16]
+    estimated_gpu_hours: 4
+    partition_class: official
+    data:
+      max_train: -1
+      max_test: -1
+    training:
+      epochs: 1
+      n_gpus: 4
+    eval:
+      n_chains: 10
+      num_examples: 300
+      n_weights: 100
+      max_tokens: 512
+      temperature: 0.7
+      max_model_len: 12288
+      tp: 1
+      gpu_mem: 0.85
+      mv_k_values: "1,2,3,5,10,15,20,30"
+      mv_n_subsets: 50
+      num_solutions:
+        grpo: 1
+        maxrl: 1
+        max_at_k: 1
+        multi_rlvr: 3
+        vpo: 3
+
+  tool:
+    name: tool
+    model: Qwen/Qwen3-1.7B
+    methods: [grpo, maxrl, max_at_k, multi_rlvr, vpo]
+    seeds: [0]
+    updates: [0, 1, 5, 10, 25, 50, 62]
+    estimated_gpu_hours: 4
+    partition_class: official
+    data:
+      source_dir: null
+    training:
+      epochs: 20
+      n_gpus: 4
+    eval:
+      n_chains: 10
+      num_prompts: 80
+      max_tokens: 2048
+      temperature: 0.7
+      max_model_len: 6144
+      tp: 1
+      gpu_mem: 0.85
+      num_solutions:
+        grpo: 1
+        maxrl: 1
+        max_at_k: 1
+        multi_rlvr: 3
+        vpo: 3
+
+next_stage:
+  eureqa_qwen3_8b:
+    enabled: false
+    reason: "Deferred until Qwen3-8B cache/download/batch settings are solved; do not download or run in Stage 2."
+  ultrafeedback_armorm:
+    enabled: false
+    reason: "Deferred benchmark track; do not implement or run UltraFeedback/ArmoRM in Stage 2."

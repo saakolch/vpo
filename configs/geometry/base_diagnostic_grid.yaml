@@ -1,0 +1,92 @@
+experiment:
+  name: frozen_base_geometry_diagnostics
+  output_root: pre_experiments/1_frozen_diagnostic
+  status_file: pre_experiments/1_frozen_diagnostic/STATUS.md
+  source_ledger: pre_experiments/1_frozen_diagnostic/SOURCE_LEDGER.md
+  command_log: pre_experiments/1_frozen_diagnostic/LOCAL_COMMAND_LOG.md
+  next_action: pre_experiments/1_frozen_diagnostic/NEXT_ACTION.md
+
+safety:
+  allow_main_experiments: false
+  max_gpu_hours_without_override: 4
+  ultra_feedback_enabled: false
+  no_rl_training: true
+  missing_model_policy: defer_then_download
+
+diagnostics:
+  dataset_split: train
+  candidate_count: 30
+  n_chains: 10
+  num_solutions: 3
+  checkpoints: [5, 20, 100]
+  n_weights: 2048
+  bootstrap_samples: 200
+  seed: 0
+  temperature: 0.7
+  top_p: 1.0
+  batch_size: 4
+  max_model_len: 4096
+  gpu_mem: 0.85
+  tp: 1
+  estimated_gpu_hours_per_pair: 1
+
+benchmarks:
+  maze:
+    enabled: true
+    estimated_gpu_hours: 1
+    models:
+      - Qwen/Qwen3-4B
+      - Qwen/Qwen3-0.6B
+    data:
+      train_size: 1000
+      test_size: 100
+      train_seed: 42
+      test_seed: 4242
+    eval:
+      max_tokens: 1024
+      max_model_len: 2048
+
+  musique:
+    enabled: true
+    estimated_gpu_hours: 8
+    models:
+      - Qwen/Qwen3-1.7B
+      - Qwen/Qwen3-0.6B
+    data:
+      max_train: -1
+      max_test: -1
+    eval:
+      max_tokens: 1024
+      max_model_len: 12288
+
+  eureqa:
+    enabled: true
+    estimated_gpu_hours: 2
+    models:
+      - Qwen/Qwen3-8B
+      - Qwen/Qwen3-1.7B
+      - Qwen/Qwen3-0.6B
+    data:
+      mode: mixed_split
+      mixed_split_seed: 0
+      max_train: -1
+      max_test: -1
+    eval:
+      max_tokens: 2048
+      max_model_len: 4096
+
+  tool:
+    enabled: true
+    estimated_gpu_hours: 2
+    models:
+      - Qwen/Qwen3-1.7B
+      - Qwen/Qwen3-0.6B
+    data:
+      source_dir: null
+    eval:
+      max_tokens: 2048
+      max_model_len: 6144
+
+  ultrafeedback:
+    enabled: false
+    deferred_reason: "UltraFeedback / ArmoRM is disabled for this frozen diagnostic run."

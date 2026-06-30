@@ -1,0 +1,65 @@
+experiment:
+  name: geometry_stage2_parallel_2gpu
+  output_root: pre_experiments/first_experiment
+  status_file: pre_experiments/first_experiment/STATUS.md
+  source_ledger: pre_experiments/first_experiment/SOURCE_LEDGER.md
+  command_log: pre_experiments/first_experiment/LOCAL_COMMAND_LOG.md
+  next_action: pre_experiments/first_experiment/NEXT_ACTION.md
+
+safety:
+  allow_main_experiments: false
+  wandb_mode: disabled
+  max_gpu_hours_without_override: 4
+  submit_full_grid: false
+  ultra_feedback_enabled: false
+
+methods:
+  active:
+    - grpo
+    - maxrl
+    - max_at_k
+    - multi_rlvr
+    - vpo
+  eval_aliases:
+    maze:
+      max_at_k: maxrl
+
+defaults:
+  seeds: [0]
+  metric: official_task_metric
+  dataset_split: test
+  candidate_budgets: [1, 3, 10, 30]
+
+stages:
+  - id: 0
+    name: synthetic_tensor_tests
+    task: synthetic
+    model: none
+    estimated_gpu_hours: 0
+
+  - id: 1
+    name: maze_smoke_qwen3_0_6b
+    task: maze
+    model: Qwen/Qwen3-0.6B
+    estimated_gpu_hours: 1
+    partition_class: smoke
+
+  - id: 2
+    name: maze_official_qwen3_4b
+    task: maze
+    model: Qwen/Qwen3-4B
+    estimated_gpu_hours: 8
+    partition_class: official
+    seeds: [0]
+    data:
+      train_size: 1000
+      test_size: 100
+      train_seed: 42
+      test_seed: 4242
+    training:
+      epochs: 50
+      n_gpus: 2
+    eval:
+      n_chains: 10
+      max_tokens: 1024
+      temperature: 0.7

@@ -1,0 +1,115 @@
+experiment:
+  name: geometry_maze_pilot
+  output_root: pre_experiments/first_experiment
+  status_file: pre_experiments/first_experiment/STATUS.md
+  source_ledger: pre_experiments/first_experiment/SOURCE_LEDGER.md
+  command_log: pre_experiments/first_experiment/LOCAL_COMMAND_LOG.md
+  next_action: pre_experiments/first_experiment/NEXT_ACTION.md
+
+safety:
+  allow_main_experiments: false
+  wandb_mode: disabled
+  max_gpu_hours_without_override: 4
+  smoke_results_are_scientific: false
+  submit_full_grid: false
+
+methods:
+  active:
+    - grpo
+    - maxrl
+    - max_at_k
+    - multi_rlvr
+    - vpo
+  eval_aliases:
+    maze:
+      max_at_k: maxrl
+  deferred:
+    target_set:
+      enabled: false
+      description: "Same multi-answer structure as VPO with fixed deployment scalar w_*."
+
+defaults:
+  seeds: [0]
+  metric: mean_scalar_reward
+  dataset_split: test
+  candidate_budgets: [1, 3, 10, 30]
+  train_overrides:
+    - "trainer.logger=[console]"
+    - "++trainer.test_freq=-1"
+    - "++actor_rollout_ref.rollout.disable_log_stats=True"
+
+stages:
+  - id: 0
+    name: synthetic_tensor_tests
+    status: pending
+    task: synthetic
+    model: none
+    estimated_gpu_hours: 0
+    commands:
+      - ".venv/bin/python -m pytest -q tests/test_geometry_diagnostics.py tests/test_eval_pipeline.py"
+      - ".venv/bin/python scripts/geometry_diagnostics.py --tensor pre_experiments/first_experiment/stages/stage_0_synthetic_tensor_tests/artifacts/synthetic_rewards.npy --output pre_experiments/first_experiment/stages/stage_0_synthetic_tensor_tests/artifacts/diagnostics.json"
+
+  - id: 1
+    name: maze_smoke_qwen3_0_6b
+    status: locked
+    task: maze
+    model: Qwen/Qwen3-0.6B
+    estimated_gpu_hours: 1
+    partition_class: smoke
+    seeds: [0]
+    data:
+      train_size: 16
+      test_size: 8
+      train_seed: 42
+      test_seed: 4242
+    training:
+      epochs: 1
+      total_training_steps: 1
+      save_freq: 1
+      n_gpus: 1
+      overrides:
+        - "++data.train_batch_size=8"
+        - "++actor_rollout_ref.rollout.n=2"
+        - "++actor_rollout_ref.actor.ppo_mini_batch_size=4"
+        - "++actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1"
+      method_overrides:
+        max_at_k:
+          - "++actor_rollout_ref.rollout.n=4"
+          - "++algorithm.max_at_k_k=2"
+    eval:
+      n_chains: 2
+      max_tokens: 256
+      temperature: 0.7
+      num_solutions:
+        grpo: 1
+        maxrl: 1
+        max_at_k: 1
+        multi_rlvr: 3
+        vpo: 3
+
+  - id: 2
+    name: maze_official_qwen3_4b
+    status: locked
+    task: maze
+    model: Qwen/Qwen3-4B
+    estimated_gpu_hours: 8
+    partition_class: official
+    seeds: [0]
+    data:
+      train_size: 1000
+      test_size: 100
+      train_seed: 42
+      test_seed: 4242
+    training:
+      epochs: 50
+      n_gpus: 4
+    eval:
+      n_chains: 10
+      max_tokens: 1024
+      temperature: 0.7
+      num_solutions:
+        grpo: 1
+        maxrl: 1
+        max_at_k: 1
+        multi_rlvr: 3
+        vpo: 3

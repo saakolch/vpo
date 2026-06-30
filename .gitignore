@@ -91,3 +91,10 @@ imgs/.texbuild/
 *.swp
 *~
 .DS_Store
+
+# Local experiment artifacts: keep branch code-only plus selected result figures.
+/pre_experiments/**
+!/pre_experiments/
+!/pre_experiments/**/
+!/pre_experiments/**/results/**/*.png
+!/pre_experiments/**/plots/**/*.png
