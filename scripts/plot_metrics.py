@@ -91,18 +91,27 @@ FONT = {
 
 
 PLOT_SPECS = [
-    ("reward_collinearity", "reward_collinearity_distribution.png", "Reward collinearity"),
-    ("effective_rank", "effective_rank_distribution.png", "Effective rank"),
-    ("pareto_fraction", "pareto_fraction_histogram.png", "Pareto fraction"),
-    ("eum", "eum_distribution.png", "Expected utility max"),
-    ("eum_gap", "eum_gap_distribution.png", "EUM gap"),
-    ("winner_entropy_normalized", "winner_entropy_histogram.png", "Winner entropy"),
-    ("dominant_candidate_mass", "dominant_candidate_mass_histogram.png", "Dominant candidate mass"),
-    ("target_regret", "target_regret_distribution.png", "Target regret"),
+    ("reward_collinearity_active", "reward_collinearity_active_distribution.png", "Reward collinearity active"),
+    ("effective_rank_entropy", "effective_rank_entropy_distribution.png", "Effective rank entropy"),
+    ("effective_rank_participation", "effective_rank_participation_distribution.png", "Effective rank participation"),
+    ("unique_pareto_fraction", "unique_pareto_fraction_histogram.png", "Unique Pareto fraction"),
+    ("eum", "eum_distribution.png", "Expected support mean"),
+    ("eum_gap", "eum_gap_delta_set_distribution.png", "EUM gap delta set"),
+    ("winner_cluster_entropy_normalized", "winner_cluster_entropy_histogram.png", "Winner cluster entropy"),
+    ("dominant_cluster_mass", "dominant_cluster_mass_histogram.png", "Dominant cluster mass"),
+    ("target_regret_fixed", "target_regret_fixed_distribution.png", "Target regret fixed"),
 ]
 
-ACCURACY_METRICS = ("mean", "best@1", "best@3", "best@10", "best@30")
-ACCURACY_PLOT = "accuracy_metrics_latest.png"
+STALE_PLOTS = {
+    "accuracy_metrics_latest.png",
+    "reward_collinearity_distribution.png",
+    "effective_rank_distribution.png",
+    "pareto_fraction_histogram.png",
+    "eum_gap_distribution.png",
+    "winner_entropy_histogram.png",
+    "dominant_candidate_mass_histogram.png",
+    "target_regret_distribution.png",
+}
 
 
 def read_tsv(path: Path) -> list[dict[str, str]]:
@@ -286,6 +295,20 @@ def split_label(rows: list[dict[str, str]]) -> str:
     return "UNKNOWN SPLIT"
 
 
+def provenance_label(rows: list[dict[str, str]]) -> str:
+    values = []
+    for row in rows:
+        value = row.get("metric_provenance", "")
+        if value and value not in values:
+            values.append(value)
+    if not values:
+        return "PROV=UNKNOWN"
+    if len(values) == 1:
+        value = values[0].split("::")[-1] if "::" in values[0] else values[0]
+        return f"PROV={value}"
+    return f"PROV=MIXED({len(values)})"
+
+
 def fmt_num(value: float) -> str:
     if abs(value) >= 100:
         return f"{value:.0f}"
@@ -344,83 +367,12 @@ def draw_panel_frame(canvas: bytearray, box: tuple[int, int, int, int], title: s
     return plot_x0, plot_y0, plot_x1, plot_y1
 
 
-def accuracy_value(row: dict[str, str], metric: str) -> float | None:
-    if metric == "mean":
-        value = _float(row.get("mean"))
-        if value is not None:
-            return value
-        eum = _float(row.get("eum"))
-        eum_gap = _float(row.get("eum_gap"))
-        if eum is not None and eum_gap is not None:
-            return eum - eum_gap
-        return _float(row.get("best@1"))
-    return _float(row.get(metric))
-
-
-def accuracy_provenance(row: dict[str, str]) -> str:
-    return row.get("metric_provenance") or "frozen_geometry_summary"
-
-
-def accuracy_png(path: Path, rows: list[dict[str, str]], output_dir: Path) -> None:
-    summary_rows = summary_rows_for(rows, output_dir)
-    canvas = new_canvas()
-    draw_text(canvas, 34, 28, "Frozen accuracy / score summary", INK, scale=3, max_width=WIDTH - 68)
-    subtitle = f"{stage_label(rows, output_dir)} | {split_label(rows)} | SUMMARY ROWS BY BENCHMARK / MODEL | GROUPS={len(summary_rows)} | ROWS={len(summary_rows)}"
-    draw_text(canvas, 36, 78, subtitle, MUTED, scale=2, max_width=WIDTH - 72)
-    note = "X=MEAN AND BEST@K SUMMARY COLUMNS | Y=ACCURACY/SCORE | METRIC_PROVENANCE SHOWN IN EACH PANEL"
-    draw_text(canvas, 36, 108, note, MUTED, scale=2, max_width=WIDTH - 72)
-    draw_line(canvas, 32, 142, WIDTH - 32, 142, GRID, width=2)
-    if not summary_rows:
-        draw_text(canvas, 80, 180, "NO SUMMARY ROWS FOUND", INK, scale=3)
-        write_png(path, canvas)
-        return
-
-    all_values = []
-    for row in summary_rows:
-        all_values.extend(value for metric in ACCURACY_METRICS if (value := accuracy_value(row, metric)) is not None)
-    ymax = max(all_values) if all_values else 1.0
-    ymax = 1.0 if ymax <= 1.0 else ymax * 1.05
-
-    for i, (row, box) in enumerate(zip(summary_rows, panel_layout(len(summary_rows)))):
-        color = PALETTE[i % len(PALETTE)]
-        benchmark = row.get("benchmark", "unknown_benchmark")
-        model = row.get("model", "unknown_model")
-        title = f"{benchmark} | {short_model(model)} | {stage_label([row], output_dir)}"
-        x0, y0, x1, y1 = box
-        draw_text(canvas, x0, y0, title, color, scale=2, max_width=x1 - x0)
-        draw_text(canvas, x0, y0 + 22, f"PROV={accuracy_provenance(row)}", MUTED, scale=1, max_width=x1 - x0)
-
-        plot_x0 = x0 + 58
-        plot_y0 = y0 + 54
-        plot_x1 = x1 - 12
-        plot_y1 = y1 - 42
-        draw_line(canvas, plot_x0, plot_y1, plot_x1, plot_y1, INK, width=2)
-        draw_line(canvas, plot_x0, plot_y0, plot_x0, plot_y1, INK, width=2)
-        for frac in (0.25, 0.5, 0.75):
-            y = plot_y1 - int((plot_y1 - plot_y0) * frac)
-            draw_line(canvas, plot_x0, y, plot_x1, y, GRID, width=1)
-        draw_text(canvas, plot_x0 - 52, plot_y0, fmt_num(ymax), MUTED, scale=1, max_width=50)
-        draw_text(canvas, plot_x0 - 52, plot_y0 + 18, "Y=ACC", MUTED, scale=1, max_width=50)
-
-        plot_w = max(1, plot_x1 - plot_x0)
-        plot_h = max(1, plot_y1 - plot_y0)
-        step = plot_w / len(ACCURACY_METRICS)
-        bar_w = max(6, int(step * 0.45))
-        for metric_idx, metric in enumerate(ACCURACY_METRICS):
-            value = accuracy_value(row, metric)
-            center = plot_x0 + int(step * (metric_idx + 0.5))
-            if value is not None:
-                bar_h = int(plot_h * max(0.0, value) / ymax)
-                draw_rect(canvas, center - bar_w // 2, plot_y1 - bar_h, center + bar_w // 2, plot_y1 - 1, color)
-            draw_text(canvas, center - 28, plot_y1 + 8, metric, MUTED, scale=1, max_width=58)
-    write_png(path, canvas)
-
-
 def histogram_png(path: Path, rows: list[dict[str, str]], column: str, label: str, output_dir: Path, bins: int = 24) -> None:
     groups = prompt_groups(rows)
     all_values = column_values(rows, column)
     canvas = new_canvas()
-    draw_header(canvas, f"{label} distribution", rows, output_dir, f"Each panel: benchmark | model. X={label}; Y=prompt count per bin.")
+    note = f"Each panel: benchmark | model | X={label} | Y=prompt count per bin | {provenance_label(rows)}"
+    draw_header(canvas, f"{label} distribution", rows, output_dir, note)
     if not groups or not all_values:
         draw_text(canvas, 80, 180, "NO PROMPT DATA FOUND", INK, scale=3)
         write_png(path, canvas)
@@ -461,7 +413,8 @@ def curve_png(path: Path, rows: list[dict[str, str]], output_dir: Path) -> None:
     groups = prompt_groups(rows)
     ks = [1, 3, 10, 30]
     canvas = new_canvas()
-    draw_header(canvas, "Best-of-K mean curves (best@K)", rows, output_dir, "Each panel: benchmark | model. X=K candidates; Y=mean best@K over prompt rows.")
+    note = f"Each panel: benchmark | model | X=K candidates in stored generation order | Y=mean best@K | {provenance_label(rows)}"
+    draw_header(canvas, "Best-of-K mean curves (best@K)", rows, output_dir, note)
     if not groups:
         draw_text(canvas, 80, 180, "NO PROMPT DATA FOUND", INK, scale=3)
         write_png(path, canvas)
@@ -501,6 +454,10 @@ def generate_plots(metrics_tsv: Path, output_dir: Path, *, allow_main_experiment
     rows = read_tsv(metrics_tsv)
     out_dir = require_pre_experiment_path(output_dir, allow_main_experiments=allow_main_experiments)
     out_dir.mkdir(parents=True, exist_ok=True)
+    for filename in STALE_PLOTS:
+        stale = out_dir / filename
+        if stale.exists():
+            stale.unlink()
     written = []
     for column, filename, label in PLOT_SPECS:
         path = out_dir / filename
@@ -509,9 +466,6 @@ def generate_plots(metrics_tsv: Path, output_dir: Path, *, allow_main_experiment
     curve_path = out_dir / "best_of_k_slope_curves.png"
     curve_png(curve_path, rows, out_dir)
     written.append(curve_path)
-    accuracy_path = out_dir / ACCURACY_PLOT
-    accuracy_png(accuracy_path, rows, out_dir)
-    written.append(accuracy_path)
     return written
 
 

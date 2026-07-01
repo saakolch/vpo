@@ -173,7 +173,7 @@ def test_process_tensor_stage_writes_tsv_strata_and_pngs(tmp_path, monkeypatch):
     assert (run_dir / "summary.tsv").exists()
     assert (run_dir / "strata.tsv").exists()
     assert (run_dir / "strata_thresholds.json").exists()
-    assert (run_dir / "reward_collinearity_distribution.png").exists()
+    assert (run_dir / "reward_collinearity_active_distribution.png").exists()
     marker = run_dir / "checkpoint_markers" / "maze__Qwen_Qwen3-0.6B__available.json"
     assert marker.exists()
     assert json.loads(marker.read_text())["limited_run"] is False

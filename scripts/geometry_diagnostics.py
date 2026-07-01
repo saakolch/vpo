@@ -21,16 +21,15 @@ from typing import Any
 import numpy as np
 
 from vpo.utils.eval_metrics import (
-    best_of_k_curve,
     dirichlet_weights,
-    expected_max_weighted,
-    mean_weighted,
-    pareto_frac,
 )
 
 
 BEST_AT_K = (1, 3, 10, 30)
 PROMPT_METRIC_BATCH_SIZE = 256
+METRIC_PROVENANCE = "scripts/geometry_diagnostics.py::frozen_geometry_diagnostics_v2"
+UNIQUE_EPSILON = 1e-12
+ACTIVE_TOL = 1e-12
 
 
 def parse_bool(value: str | bool | None) -> bool:
@@ -80,33 +79,65 @@ def normalize_tensor(tensor: np.ndarray) -> np.ndarray:
     return arr
 
 
-def reward_collinearity(flat: np.ndarray) -> float:
+def _normalize_weights(weights: np.ndarray, n_obj: int, label: str) -> np.ndarray:
+    arr = np.asarray(weights, dtype=np.float64)
+    if arr.shape != (n_obj,):
+        raise ValueError(f"Expected {label} weights of shape ({n_obj},), got {arr.shape}.")
+    total = float(arr.sum())
+    if total <= 0:
+        raise ValueError(f"{label} weights must have positive sum.")
+    return arr / total
+
+
+def reward_collinearity(flat: np.ndarray) -> float | None:
     matrix = np.asarray(flat, dtype=np.float64)
     if matrix.ndim != 2:
         raise ValueError("reward_collinearity expects a 2D matrix.")
     if matrix.shape[1] < 2:
-        return 1.0
+        return None
     centered = matrix - matrix.mean(axis=0, keepdims=True)
-    keep = centered.std(axis=0) > 1e-12
+    keep = centered.std(axis=0) > ACTIVE_TOL
     if int(keep.sum()) < 2:
-        return 1.0
+        return None
     corr = np.corrcoef(centered[:, keep], rowvar=False)
     idx = np.triu_indices(corr.shape[0], k=1)
     if idx[0].size == 0:
-        return 1.0
-    return float(np.mean(np.abs(corr[idx])))
+        return None
+    vals = np.abs(corr[idx])
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return None
+    return float(np.mean(vals))
+
+
+def _singular_values(flat: np.ndarray) -> np.ndarray:
+    matrix = np.asarray(flat, dtype=np.float64)
+    centered = matrix - matrix.mean(axis=0, keepdims=True)
+    return np.linalg.svd(centered, compute_uv=False)
+
+
+def effective_rank_entropy(flat: np.ndarray) -> float:
+    singular_values = _singular_values(flat)
+    total = float(singular_values.sum())
+    if total <= ACTIVE_TOL:
+        return 0.0
+    probs = singular_values / total
+    entropy = -float(np.sum(probs * np.log(probs + ACTIVE_TOL)))
+    return float(math.exp(entropy))
+
+
+def effective_rank_participation(flat: np.ndarray) -> float:
+    singular_values = _singular_values(flat)
+    denom = float(np.sum(singular_values ** 2))
+    if denom <= ACTIVE_TOL:
+        return 0.0
+    total = float(singular_values.sum())
+    return float((total * total) / denom)
 
 
 def effective_rank(flat: np.ndarray) -> float:
-    matrix = np.asarray(flat, dtype=np.float64)
-    centered = matrix - matrix.mean(axis=0, keepdims=True)
-    singular_values = np.linalg.svd(centered, compute_uv=False)
-    total = float(singular_values.sum())
-    if total <= 1e-12:
-        return 0.0
-    probs = singular_values / total
-    entropy = -float(np.sum(probs * np.log(probs + 1e-12)))
-    return float(math.exp(entropy))
+    """Compatibility alias for entropy effective rank."""
+    return effective_rank_entropy(flat)
 
 
 def entropy_from_counts(counts: np.ndarray) -> float:
@@ -118,45 +149,151 @@ def entropy_from_counts(counts: np.ndarray) -> float:
     return -float(np.sum(probs * np.log(probs)))
 
 
+def reward_cluster_ids(pool: np.ndarray, epsilon: float = UNIQUE_EPSILON) -> tuple[np.ndarray, int]:
+    if epsilon <= 0:
+        rounded = np.asarray(pool, dtype=np.float64)
+    else:
+        rounded = np.round(np.asarray(pool, dtype=np.float64) / epsilon).astype(np.int64)
+    mapping: dict[tuple[Any, ...], int] = {}
+    ids = np.empty(pool.shape[0], dtype=np.int64)
+    for i, row in enumerate(rounded):
+        key = tuple(row.tolist())
+        if key not in mapping:
+            mapping[key] = len(mapping)
+        ids[i] = mapping[key]
+    return ids, len(mapping)
+
+
+def unique_reward_vectors(pool: np.ndarray, epsilon: float = UNIQUE_EPSILON) -> np.ndarray:
+    matrix = np.asarray(pool, dtype=np.float64)
+    if matrix.ndim != 2:
+        raise ValueError("unique_reward_vectors expects a 2D matrix.")
+    if epsilon <= 0:
+        rounded = matrix
+    else:
+        rounded = np.round(matrix / epsilon).astype(np.int64)
+    _, idx = np.unique(rounded, axis=0, return_index=True)
+    return matrix[np.sort(idx)]
+
+
+def pareto_count(matrix: np.ndarray, epsilon: float = UNIQUE_EPSILON) -> int:
+    arr = np.asarray(matrix, dtype=np.float64)
+    n = arr.shape[0]
+    if n == 0:
+        return 0
+    dominated = np.zeros(n, dtype=bool)
+    for i in range(n):
+        if dominated[i]:
+            continue
+        diff = arr - arr[i]
+        dominates_i = np.all(diff >= -epsilon, axis=1) & np.any(diff > epsilon, axis=1)
+        dominates_i[i] = False
+        if bool(np.any(dominates_i)):
+            dominated[i] = True
+    return int((~dominated).sum())
+
+
+def pareto_fraction(matrix: np.ndarray, epsilon: float = UNIQUE_EPSILON) -> float:
+    arr = np.asarray(matrix, dtype=np.float64)
+    if arr.shape[0] <= 1:
+        return 1.0
+    return float(pareto_count(arr, epsilon=epsilon) / arr.shape[0])
+
+
+def unique_pareto_stats(pool: np.ndarray, epsilon: float = UNIQUE_EPSILON) -> dict[str, float]:
+    unique = unique_reward_vectors(pool, epsilon=epsilon)
+    unique_count = int(unique.shape[0])
+    unique_pareto_count = pareto_count(unique, epsilon=epsilon)
+    return {
+        "unique_reward_vector_count": float(unique_count),
+        "unique_pareto_count": float(unique_pareto_count),
+        "unique_pareto_fraction": float(unique_pareto_count / max(1, unique_count)),
+        "raw_pareto_fraction": pareto_fraction(pool, epsilon=epsilon),
+    }
+
+
+def winner_cluster_distribution(
+    pool: np.ndarray,
+    weighted: np.ndarray,
+    epsilon: float = UNIQUE_EPSILON,
+) -> tuple[float, float, float, int]:
+    cluster_ids, n_clusters = reward_cluster_ids(pool, epsilon=epsilon)
+    max_scores = weighted.max(axis=0, keepdims=True)
+    winners = np.isclose(weighted, max_scores, rtol=0.0, atol=epsilon)
+    cluster_wins = np.zeros((n_clusters, weighted.shape[1]), dtype=bool)
+    for cluster_idx in range(n_clusters):
+        cluster_wins[cluster_idx] = winners[cluster_ids == cluster_idx].any(axis=0)
+    ties = cluster_wins.sum(axis=0).astype(np.float64)
+    ties[ties <= 0.0] = 1.0
+    mass = (cluster_wins / ties).sum(axis=1)
+    entropy = entropy_from_counts(mass)
+    max_entropy = math.log(n_clusters) if n_clusters > 1 else 1.0
+    dominant_mass = float(mass.max() / max(1.0, mass.sum()))
+    normalized = float(entropy / max_entropy) if max_entropy > 0 else 0.0
+    return entropy, normalized, dominant_mass, n_clusters
+
+
+def best_of_k_from_order(scores: np.ndarray) -> np.ndarray:
+    return np.maximum.accumulate(np.asarray(scores, dtype=np.float64))
+
+
+def expected_support_values(pool: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
+    weighted = pool @ weights.T
+    expected_support = float(weighted.max(axis=0).mean())
+    best_mean_support = float((pool @ weights.mean(axis=0)).max())
+    return expected_support, float(expected_support - best_mean_support)
+
+
 def prompt_metrics(
     pool: np.ndarray,
     weights: np.ndarray,
     target_weights: np.ndarray,
     seed: int,
-) -> dict[str, float]:
+    train_weights: np.ndarray | None = None,
+) -> dict[str, float | None]:
+    del seed  # Candidate order is the stored generation order for Layer A.
+    if train_weights is None:
+        train_weights = np.ones(pool.shape[1], dtype=np.float64) / pool.shape[1]
     weighted = pool @ weights.T
-    winners = np.argmax(weighted, axis=0)
-    counts = np.bincount(winners, minlength=pool.shape[0]).astype(np.float64)
-    winner_entropy = entropy_from_counts(counts)
-    max_entropy = math.log(pool.shape[0]) if pool.shape[0] > 1 else 1.0
-    dominant_mass = float(counts.max() / max(1.0, counts.sum()))
+    eum, eum_gap = expected_support_values(pool, weights)
+    winner_entropy, winner_entropy_normalized, dominant_mass, n_clusters = winner_cluster_distribution(pool, weighted)
 
     target_scores = pool @ target_weights
-    uniform_scores = pool.mean(axis=1)
+    train_scores = pool @ train_weights
     target_best = float(target_scores.max())
-    uniform_pick = int(np.argmax(uniform_scores))
-    target_regret = float(target_best - target_scores[uniform_pick])
+    train_pick = int(np.argmax(train_scores))
+    target_regret = float(target_best - target_scores[train_pick])
 
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(pool.shape[0])
-    scalar = pool.mean(axis=1)
-    curve = best_of_k_curve(scalar, perm)
+    curve = best_of_k_from_order(train_scores)
     k_hi = min(30, len(curve))
     best_slope = 0.0 if k_hi <= 1 else float((curve[k_hi - 1] - curve[0]) / (k_hi - 1))
+    collinearity = reward_collinearity(pool)
+    pareto = unique_pareto_stats(pool)
 
     out = {
-        "reward_collinearity": reward_collinearity(pool),
-        "effective_rank": effective_rank(pool),
-        "pareto_fraction": float(pareto_frac(pool)),
-        "eum": float(expected_max_weighted(pool, weights)),
-        "eum_gap": float(expected_max_weighted(pool, weights) - mean_weighted(pool, weights)),
+        "reward_collinearity": collinearity,
+        "reward_collinearity_active": collinearity,
+        "reward_collinearity_defined": 1.0 if collinearity is not None else 0.0,
+        "effective_rank": effective_rank_entropy(pool),
+        "effective_rank_entropy": effective_rank_entropy(pool),
+        "effective_rank_participation": effective_rank_participation(pool),
+        "pareto_fraction": pareto["unique_pareto_fraction"],
+        **pareto,
+        "eum": eum,
+        "expected_support_mean": eum,
+        "eum_gap": eum_gap,
+        "expected_support_delta_set": eum_gap,
         "winner_entropy": winner_entropy,
-        "winner_entropy_normalized": float(winner_entropy / max_entropy) if max_entropy > 0 else 0.0,
+        "winner_cluster_entropy": winner_entropy,
+        "winner_entropy_normalized": winner_entropy_normalized,
+        "winner_cluster_entropy_normalized": winner_entropy_normalized,
         "dominant_candidate_mass": dominant_mass,
+        "dominant_cluster_mass": dominant_mass,
+        "reward_cluster_count": float(n_clusters),
         "target_regret": target_regret,
+        "target_regret_fixed": target_regret,
         "base_best_of_k_slope": best_slope,
         "best_of_k_slope": best_slope,
-        "base_best_of_k_slope": best_slope,
     }
     for k in BEST_AT_K:
         if k <= len(curve):
@@ -206,74 +343,59 @@ def bootstrap_eum_from_values(
 
 
 def _batched_prompt_eum(rewards: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    values, _ = _batched_prompt_expected_support(rewards, weights)
+    return values
+
+
+def _batched_prompt_expected_support(rewards: np.ndarray, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     values = np.empty(rewards.shape[0], dtype=np.float64)
+    gaps = np.empty(rewards.shape[0], dtype=np.float64)
     weights_t = weights.T
+    mean_weight = weights.mean(axis=0)
     for start in range(0, rewards.shape[0], PROMPT_METRIC_BATCH_SIZE):
         end = min(start + PROMPT_METRIC_BATCH_SIZE, rewards.shape[0])
         weighted = rewards[start:end] @ weights_t
         values[start:end] = weighted.max(axis=1).mean(axis=1)
-    return values
+        gaps[start:end] = values[start:end] - (rewards[start:end] @ mean_weight).max(axis=1)
+    return values, gaps
 
 
 def batched_prompt_metrics(
     rewards: np.ndarray,
     weights: np.ndarray,
     target_weights: np.ndarray,
+    train_weights: np.ndarray,
     seed: int,
-) -> tuple[list[dict[str, float]], np.ndarray]:
+) -> tuple[list[dict[str, float | None]], np.ndarray]:
     n_prompts, pool_size, _ = rewards.shape
-    weights_t = weights.T
-    prompt_eum = np.empty(n_prompts, dtype=np.float64)
-    prompt_mean_weighted = np.empty(n_prompts, dtype=np.float64)
-    winner_entropy = np.empty(n_prompts, dtype=np.float64)
-    dominant_mass = np.empty(n_prompts, dtype=np.float64)
-    max_entropy = math.log(pool_size) if pool_size > 1 else 1.0
-
-    for start in range(0, n_prompts, PROMPT_METRIC_BATCH_SIZE):
-        end = min(start + PROMPT_METRIC_BATCH_SIZE, n_prompts)
-        weighted = rewards[start:end] @ weights_t
-        prompt_eum[start:end] = weighted.max(axis=1).mean(axis=1)
-        prompt_mean_weighted[start:end] = weighted.mean(axis=(1, 2))
-        winners = np.argmax(weighted, axis=1)
-        for offset, row in enumerate(winners):
-            counts = np.bincount(row, minlength=pool_size).astype(np.float64)
-            prompt_idx = start + offset
-            winner_entropy[prompt_idx] = entropy_from_counts(counts)
-            dominant_mass[prompt_idx] = float(counts.max() / max(1.0, counts.sum()))
-
-    target_scores = rewards @ target_weights
-    uniform_scores = rewards.mean(axis=2)
-    per_prompt: list[dict[str, float]] = []
+    prompt_eum, prompt_eum_gap = _batched_prompt_expected_support(rewards, weights)
+    per_prompt: list[dict[str, float | None]] = []
     for i, pool in enumerate(rewards):
-        target_best = float(target_scores[i].max())
-        uniform_pick = int(np.argmax(uniform_scores[i]))
-        target_regret = float(target_best - target_scores[i, uniform_pick])
-
-        rng = np.random.default_rng(seed + i)
-        perm = rng.permutation(pool_size)
-        curve = best_of_k_curve(uniform_scores[i], perm)
-        k_hi = min(30, len(curve))
-        best_slope = 0.0 if k_hi <= 1 else float((curve[k_hi - 1] - curve[0]) / (k_hi - 1))
-
-        row = {
-            "reward_collinearity": reward_collinearity(pool),
-            "effective_rank": effective_rank(pool),
-            "pareto_fraction": float(pareto_frac(pool)),
-            "eum": float(prompt_eum[i]),
-            "eum_gap": float(prompt_eum[i] - prompt_mean_weighted[i]),
-            "winner_entropy": float(winner_entropy[i]),
-            "winner_entropy_normalized": float(winner_entropy[i] / max_entropy) if max_entropy > 0 else 0.0,
-            "dominant_candidate_mass": float(dominant_mass[i]),
-            "target_regret": target_regret,
-            "base_best_of_k_slope": best_slope,
-            "best_of_k_slope": best_slope,
-        }
-        for k in BEST_AT_K:
-            if k <= len(curve):
-                row[f"best@{k}"] = float(curve[k - 1])
+        row = prompt_metrics(pool, weights, target_weights, seed + i, train_weights=train_weights)
+        row["eum"] = float(prompt_eum[i])
+        row["expected_support_mean"] = float(prompt_eum[i])
+        row["eum_gap"] = float(prompt_eum_gap[i])
+        row["expected_support_delta_set"] = float(prompt_eum_gap[i])
         per_prompt.append(row)
 
     return per_prompt, prompt_eum
+
+
+def _mean_prompt_metric(rows: list[dict[str, float | None]], key: str) -> float | None:
+    vals = []
+    for row in rows:
+        value = row.get(key)
+        if value is None:
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            vals.append(numeric)
+    if not vals:
+        return None
+    return float(np.mean(vals))
 
 
 def compute_diagnostics(
@@ -282,6 +404,7 @@ def compute_diagnostics(
     seed: int = 0,
     bootstrap_samples: int = 200,
     target_weights: np.ndarray | None = None,
+    train_weights: np.ndarray | None = None,
 ) -> dict[str, Any]:
     rewards = normalize_tensor(tensor)
     n_prompts, pool_size, n_obj = rewards.shape
@@ -289,25 +412,22 @@ def compute_diagnostics(
     if target_weights is None:
         target_weights = np.ones(n_obj, dtype=np.float64) / n_obj
     else:
-        target_weights = np.asarray(target_weights, dtype=np.float64)
-        if target_weights.shape != (n_obj,):
-            raise ValueError(f"Expected target weights of shape ({n_obj},), got {target_weights.shape}.")
-        total = float(target_weights.sum())
-        if total <= 0:
-            raise ValueError("Target weights must have positive sum.")
-        target_weights = target_weights / total
+        target_weights = _normalize_weights(target_weights, n_obj, "Target")
+    if train_weights is None:
+        train_weights = np.ones(n_obj, dtype=np.float64) / n_obj
+    else:
+        train_weights = _normalize_weights(train_weights, n_obj, "Train")
 
     flat = rewards.reshape(n_prompts * pool_size, n_obj)
-    per_prompt, prompt_eum = batched_prompt_metrics(rewards, weights, target_weights, seed)
+    per_prompt, prompt_eum = batched_prompt_metrics(rewards, weights, target_weights, train_weights, seed)
     keys = sorted({k for row in per_prompt for k in row})
-    aggregate = {
-        key: float(np.mean([row[key] for row in per_prompt if key in row]))
-        for key in keys
-    }
+    aggregate = {key: _mean_prompt_metric(per_prompt, key) for key in keys}
+    global_collinearity = reward_collinearity(flat)
     aggregate.update(
         {
-            "reward_collinearity": reward_collinearity(flat),
-            "effective_rank": effective_rank(flat),
+            "reward_collinearity_global_active": global_collinearity,
+            "effective_rank_global_entropy": effective_rank_entropy(flat),
+            "effective_rank_global_participation": effective_rank_participation(flat),
             "num_prompts": int(n_prompts),
             "pool_size": int(pool_size),
             "num_objectives": int(n_obj),
@@ -315,7 +435,8 @@ def compute_diagnostics(
     )
     aggregate.update(bootstrap_eum_from_values(prompt_eum, seed=seed, samples=bootstrap_samples))
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "metric_provenance": METRIC_PROVENANCE,
         "metrics": aggregate,
         "per_prompt": per_prompt,
         "settings": {
@@ -323,6 +444,9 @@ def compute_diagnostics(
             "seed": int(seed),
             "bootstrap_samples": int(bootstrap_samples),
             "target_weights": target_weights.tolist(),
+            "train_weights": train_weights.tolist(),
+            "unique_epsilon": UNIQUE_EPSILON,
+            "metric_provenance": METRIC_PROVENANCE,
         },
     }
 
@@ -334,6 +458,7 @@ PREFERRED_TSV_COLUMNS = [
     "model",
     "dataset_split",
     "stage_percent",
+    "metric_provenance",
     "phase",
     "model_status",
     "snapshot_path",
@@ -370,6 +495,7 @@ def rows_from_diagnostics(
     settings = diagnostics.get("settings", {})
     common = {
         "schema_version": diagnostics.get("schema_version", 1),
+        "metric_provenance": diagnostics.get("metric_provenance", settings.get("metric_provenance", "")),
         "benchmark": benchmark,
         "model": model,
         "dataset_split": dataset_split,
@@ -428,11 +554,16 @@ def parse_target_weights(text: str | None) -> np.ndarray | None:
     return np.asarray([float(x.strip()) for x in text.split(",") if x.strip()], dtype=np.float64)
 
 
+def parse_train_weights(text: str | None) -> np.ndarray | None:
+    return parse_target_weights(text)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tensor", required=True, help="Path to .npy reward tensor.")
     parser.add_argument("--output", required=True, help="Diagnostics JSON path.")
     parser.add_argument("--target-weights", default=None, help="Comma-separated deployment weights.")
+    parser.add_argument("--train-weights", default=None, help="Comma-separated train scalarization weights.")
     parser.add_argument("--n-weights", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--bootstrap-samples", type=int, default=200)
@@ -459,6 +590,7 @@ def main() -> None:
         seed=args.seed,
         bootstrap_samples=args.bootstrap_samples,
         target_weights=parse_target_weights(args.target_weights),
+        train_weights=parse_train_weights(args.train_weights),
     )
     diagnostics["tensor_path"] = str(Path(args.tensor).expanduser())
     out_path.parent.mkdir(parents=True, exist_ok=True)

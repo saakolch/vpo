@@ -79,3 +79,17 @@ def test_stage2_path_guard_rejects_non_stage2_outputs(tmp_path, monkeypatch):
     patch_roots(monkeypatch, tmp_path)
     with pytest.raises(ValueError, match="outside pre_experiments/2_short_training"):
         common.require_stage2_path(tmp_path / "pre_experiments" / "first_experiment" / "bad.json")
+
+
+def test_container_config_has_musique_multi_rollout_memory_overrides():
+    config = common.load_yaml(Path("configs/geometry/short_training_dynamics_container_2gpu.yaml"))
+    method_overrides = config["benchmarks"]["musique"]["training"]["method_overrides"]
+
+    for method in ("multi_rlvr", "vpo"):
+        overrides = method_overrides[method]
+        assert "actor_rollout_ref.actor.fsdp_config.param_offload=True" in overrides
+        assert "actor_rollout_ref.actor.fsdp_config.optimizer_offload=True" in overrides
+        assert "actor_rollout_ref.rollout.gpu_memory_utilization=0.10" in overrides
+        assert "actor_rollout_ref.rollout.max_model_len=6144" in overrides
+        assert "actor_rollout_ref.rollout.max_num_seqs=16" in overrides
+        assert "actor_rollout_ref.rollout.max_num_batched_tokens=6144" in overrides

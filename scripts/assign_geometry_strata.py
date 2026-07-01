@@ -15,14 +15,14 @@ from scripts.geometry_diagnostics import parse_bool, require_pre_experiment_path
 
 
 METRIC_COLUMNS = [
-    "reward_collinearity",
-    "effective_rank",
-    "pareto_fraction",
+    "reward_collinearity_active",
+    "effective_rank_entropy",
+    "unique_pareto_fraction",
     "eum",
     "eum_gap",
-    "winner_entropy_normalized",
-    "dominant_candidate_mass",
-    "target_regret",
+    "winner_cluster_entropy_normalized",
+    "dominant_cluster_mass",
+    "target_regret_fixed",
     "best_of_k_slope",
     "best@30",
     "bootstrap_stability",
@@ -70,21 +70,21 @@ def _le(row: dict[str, Any], thresholds: dict[str, dict[str, float]], key: str, 
 
 
 def assign_label(row: dict[str, Any], thresholds: dict[str, dict[str, float]]) -> str:
-    if _ge(row, thresholds, "reward_collinearity", "q75") or _le(row, thresholds, "effective_rank", "q25"):
+    if _ge(row, thresholds, "reward_collinearity_active", "q75") or _le(row, thresholds, "effective_rank_entropy", "q25"):
         return "scalar_like"
-    if _le(row, thresholds, "winner_entropy_normalized", "q25") and _ge(row, thresholds, "dominant_candidate_mass", "q75"):
+    if _le(row, thresholds, "winner_cluster_entropy_normalized", "q25") and _ge(row, thresholds, "dominant_cluster_mass", "q75"):
         return "dominant_candidate"
     if (
-        _ge(row, thresholds, "winner_entropy_normalized", "q75")
+        _ge(row, thresholds, "winner_cluster_entropy_normalized", "q75")
         and _ge(row, thresholds, "eum_gap", "q75")
-        and _le(row, thresholds, "target_regret", "q25")
+        and _le(row, thresholds, "target_regret_fixed", "q25")
     ):
         return "aligned_diversity"
-    if _ge(row, thresholds, "winner_entropy_normalized", "q75") and _ge(row, thresholds, "target_regret", "q75"):
+    if _ge(row, thresholds, "winner_cluster_entropy_normalized", "q75") and _ge(row, thresholds, "target_regret_fixed", "q75"):
         return "off_target_diversity"
     if _ge(row, thresholds, "best_of_k_slope", "q75") or _ge(row, thresholds, "best@30", "q75"):
         return "search_sufficient"
-    if _ge(row, thresholds, "pareto_fraction", "q75") and _le(row, thresholds, "bootstrap_stability", "q25"):
+    if _ge(row, thresholds, "unique_pareto_fraction", "q75") and _le(row, thresholds, "bootstrap_stability", "q25"):
         return "noisy_frontier"
     return "unclassified"
 

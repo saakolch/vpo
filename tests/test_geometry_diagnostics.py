@@ -6,8 +6,11 @@ from scripts.geometry_diagnostics import (
     bootstrap_eum,
     compute_diagnostics,
     effective_rank,
+    effective_rank_entropy,
+    effective_rank_participation,
     prompt_metrics,
     reward_collinearity,
+    unique_pareto_stats,
 )
 from vpo.utils.eval_metrics import dirichlet_weights, expected_max_weighted
 
@@ -23,7 +26,85 @@ def test_collinear_rewards_have_high_collinearity_and_low_effective_rank():
     out = metrics(rewards)
 
     assert out["reward_collinearity"] > 0.99
-    assert out["effective_rank"] < 1.05
+    assert out["effective_rank_entropy"] < 1.05
+    assert out["effective_rank"] == out["effective_rank_entropy"]
+
+
+def test_eum_gap_uses_delta_set_not_mean_reward_gap():
+    collapsed = np.array([[0.5, 0.5], [0.5, 0.5]])
+    specialists = np.array([[1.0, 0.0], [0.0, 1.0]])
+
+    collapsed_metrics = compute_diagnostics(collapsed, n_weights=256, seed=3, bootstrap_samples=0)["metrics"]
+    specialist_metrics = compute_diagnostics(specialists, n_weights=256, seed=3, bootstrap_samples=0)["metrics"]
+
+    assert np.isclose(collapsed_metrics["eum_gap"], 0.0)
+    assert specialist_metrics["eum_gap"] > 0.20
+    assert specialist_metrics["eum_gap"] == specialist_metrics["expected_support_delta_set"]
+
+
+def test_winner_entropy_is_tie_aware_over_reward_clusters():
+    duplicated_winners = np.array([[1.0, 0.0], [1.0, 0.0]])
+
+    out = compute_diagnostics(duplicated_winners, n_weights=32, seed=0, bootstrap_samples=0)["metrics"]
+
+    assert out["reward_cluster_count"] == 1.0
+    assert out["winner_cluster_entropy"] == 0.0
+    assert out["winner_cluster_entropy_normalized"] == 0.0
+    assert out["dominant_cluster_mass"] == 1.0
+
+
+def test_unique_pareto_fraction_deduplicates_reward_vectors():
+    rewards = np.array(
+        [
+            [1.0, 1.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+        ]
+    )
+
+    stats = unique_pareto_stats(rewards)
+    out = compute_diagnostics(rewards, n_weights=32, seed=0, bootstrap_samples=0)["metrics"]
+
+    assert stats["unique_reward_vector_count"] == 2.0
+    assert stats["unique_pareto_count"] == 1.0
+    assert stats["unique_pareto_fraction"] == 0.5
+    assert out["pareto_fraction"] == out["unique_pareto_fraction"]
+    assert out["raw_pareto_fraction"] != out["unique_pareto_fraction"]
+
+
+def test_inactive_collinearity_is_undefined_not_forced_to_one():
+    constant = np.ones((2, 4, 3))
+
+    out = compute_diagnostics(constant, n_weights=16, seed=0, bootstrap_samples=0)
+
+    assert out["per_prompt"][0]["reward_collinearity"] is None
+    assert out["per_prompt"][1]["reward_collinearity"] is None
+    assert out["metrics"]["reward_collinearity"] is None
+    assert out["metrics"]["reward_collinearity_defined"] == 0.0
+
+
+def test_effective_rank_entropy_and_participation_are_reported():
+    rewards = np.eye(3)
+
+    assert effective_rank_entropy(rewards) > 1.0
+    assert effective_rank_participation(rewards) > 1.0
+    assert effective_rank(rewards) == effective_rank_entropy(rewards)
+
+
+def test_fixed_target_regret_uses_train_and_target_scalarizations():
+    rewards = np.array([[1.0, 0.0], [0.0, 1.0]])
+
+    out = compute_diagnostics(
+        rewards,
+        n_weights=64,
+        seed=5,
+        bootstrap_samples=0,
+        train_weights=np.array([1.0, 0.0]),
+        target_weights=np.array([0.0, 1.0]),
+    )["metrics"]
+
+    assert np.isclose(out["target_regret_fixed"], 1.0)
+    assert out["target_regret"] == out["target_regret_fixed"]
 
 
 def test_specialist_rewards_increase_eum_gap_and_winner_entropy():
@@ -43,7 +124,7 @@ def test_specialist_rewards_increase_eum_gap_and_winner_entropy():
     specialist_metrics = metrics(specialists)
 
     assert specialist_metrics["eum_gap"] > collapsed_metrics["eum_gap"]
-    assert specialist_metrics["winner_entropy"] > collapsed_metrics["winner_entropy"]
+    assert specialist_metrics["winner_cluster_entropy"] > collapsed_metrics["winner_cluster_entropy"]
     assert specialist_metrics["base_best_of_k_slope"] == specialist_metrics["best_of_k_slope"]
 
 
@@ -130,23 +211,23 @@ def test_compute_diagnostics_matches_prompt_metric_reference():
     n_weights = 41
     bootstrap_samples = 11
     target_weights = np.array([0.1, 0.2, 0.3, 0.4])
+    train_weights = np.array([0.4, 0.3, 0.2, 0.1])
     weights = dirichlet_weights(rewards.shape[2], n_weights, seed=seed)
     normalized_target = target_weights / target_weights.sum()
+    normalized_train = train_weights / train_weights.sum()
 
     per_prompt = [
-        prompt_metrics(pool, weights, normalized_target, seed + i)
+        prompt_metrics(pool, weights, normalized_target, seed + i, train_weights=normalized_train)
         for i, pool in enumerate(rewards)
     ]
     keys = sorted({k for row in per_prompt for k in row})
     expected_metrics = {
-        key: float(np.mean([row[key] for row in per_prompt if key in row]))
+        key: float(np.mean([row[key] for row in per_prompt if row.get(key) is not None]))
         for key in keys
+        if any(row.get(key) is not None for row in per_prompt)
     }
-    flat = rewards.reshape(rewards.shape[0] * rewards.shape[1], rewards.shape[2])
     expected_metrics.update(
         {
-            "reward_collinearity": reward_collinearity(flat),
-            "effective_rank": effective_rank(flat),
             "num_prompts": int(rewards.shape[0]),
             "pool_size": int(rewards.shape[1]),
             "num_objectives": int(rewards.shape[2]),
@@ -162,10 +243,12 @@ def test_compute_diagnostics_matches_prompt_metric_reference():
         seed=seed,
         bootstrap_samples=bootstrap_samples,
         target_weights=target_weights,
+        train_weights=train_weights,
     )
 
     for key, expected in expected_metrics.items():
         assert np.isclose(actual["metrics"][key], expected)
+    assert actual["metric_provenance"] == "scripts/geometry_diagnostics.py::frozen_geometry_diagnostics_v2"
     assert len(actual["per_prompt"]) == len(per_prompt)
     for actual_row, expected_row in zip(actual["per_prompt"], per_prompt):
         assert actual_row.keys() == expected_row.keys()

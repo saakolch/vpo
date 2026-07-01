@@ -22,14 +22,16 @@ def metric_row(benchmark: str, model: str, prompt_index: int, offset: float) -> 
         "dataset_split": "train",
         "stage_percent": 100,
         "prompt_index": prompt_index,
-        "reward_collinearity": 0.1 + offset,
-        "effective_rank": 1.0 + offset,
-        "pareto_fraction": 0.2 + offset,
+        "metric_provenance": "scripts/geometry_diagnostics.py::frozen_geometry_diagnostics_v2",
+        "reward_collinearity_active": 0.1 + offset,
+        "effective_rank_entropy": 1.0 + offset,
+        "effective_rank_participation": 1.2 + offset,
+        "unique_pareto_fraction": 0.2 + offset,
         "eum": 0.3 + offset,
         "eum_gap": 0.1 + offset,
-        "winner_entropy_normalized": 0.5 + offset,
-        "dominant_candidate_mass": 0.4 + offset,
-        "target_regret": 0.05 + offset,
+        "winner_cluster_entropy_normalized": 0.5 + offset,
+        "dominant_cluster_mass": 0.4 + offset,
+        "target_regret_fixed": 0.05 + offset,
         "best@1": 0.1 + offset,
         "best@3": 0.2 + offset,
         "best@10": 0.3 + offset,
@@ -82,7 +84,21 @@ def test_plot_metrics_writes_pngs_from_tsv(tmp_path, monkeypatch):
     written = generate_plots(metrics, pre)
 
     assert written
-    assert pre / "accuracy_metrics_latest.png" in written
+    expected = {
+        "reward_collinearity_active_distribution.png",
+        "effective_rank_entropy_distribution.png",
+        "effective_rank_participation_distribution.png",
+        "unique_pareto_fraction_histogram.png",
+        "eum_distribution.png",
+        "eum_gap_delta_set_distribution.png",
+        "winner_cluster_entropy_histogram.png",
+        "dominant_cluster_mass_histogram.png",
+        "target_regret_fixed_distribution.png",
+        "best_of_k_slope_curves.png",
+    }
+    assert {Path(path).name for path in written} == expected
+    assert pre / "accuracy_metrics_latest.png" not in written
+    assert not (pre / "accuracy_metrics_latest.png").exists()
     for path in written:
         assert png_size(Path(path)) == (WIDTH, HEIGHT)
         assert Path(path).stat().st_size > 10_000

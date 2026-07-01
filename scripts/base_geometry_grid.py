@@ -299,6 +299,15 @@ def merge_tsv(path: Path, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
+def diagnostic_weights(value: Any) -> np.ndarray | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        parts = [x.strip() for x in value.split(",") if x.strip()]
+        return np.asarray([float(x) for x in parts], dtype=np.float64)
+    return np.asarray(value, dtype=np.float64)
+
+
 def expected_prompt_count(config: dict[str, Any], root: Path, benchmark: str) -> int | None:
     split = str(config.get("diagnostics", {}).get("dataset_split", "train"))
     bcfg = config.get("benchmarks", {}).get(benchmark, {})
@@ -413,6 +422,8 @@ def process_tensor_stage(
         n_weights=int(diagnostics_cfg.get("n_weights", 2048)),
         seed=int(diagnostics_cfg.get("seed", 0)),
         bootstrap_samples=bootstrap,
+        target_weights=diagnostic_weights(diagnostics_cfg.get("target_weights")),
+        train_weights=diagnostic_weights(diagnostics_cfg.get("train_weights")),
     )
     diagnostics["tensor_path"] = str(tensor_path)
     (run_dir / "diagnostics_json").mkdir(parents=True, exist_ok=True)
